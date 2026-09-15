@@ -1,0 +1,23 @@
+{
+  "name": "securedesk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SecureDesk — Enterprise IT Helpdesk & Asset Management Platform",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm run start:dev -w backend",
+    "dev:frontend": "npm run dev -w frontend",
+    "build": "npm run build -w backend && npm run build -w frontend",
+    "test:backend": "npm run test -w backend",
+    "test:frontend": "npm run test -w frontend",
+    "typecheck": "npm run typecheck -w backend && npm run typecheck -w frontend",
+    "db:push": "npm run db:push -w backend",
+    "db:seed": "npm run db:seed -w backend"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,305 @@
+// SecureDesk database schema
+// Works with SQLite (local dev: DATABASE_URL="file:./dev.db") and PostgreSQL (production).
+// Enum-like values are plain strings validated in application constants.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql" // switch to "postgresql" for production
+  url      = env("DATABASE_URL")
+}
+
+// ────────────────────────── Identity & Access ──────────────────────────
+
+model Role {
+  id           String   @id @default(cuid())
+  name         String   @unique // EMPLOYEE | IT_SUPPORT | MANAGER | ADMIN
+  description  String?
+  users        User[]
+  permissions  RolePermission[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  name        String           @unique // e.g. ticket:read:own, asset:manage
+  description String?
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  roleId       String
+  role         Role      @relation(fields: [roleId], references: [id])
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  ticketsRequested     Ticket[]           @relation("TicketRequester")
+  ticketsAssigned      Ticket[]           @relation("TicketAssignee")
+  comments             TicketComment[]
+  attachments          TicketAttachment[]
+  ticketHistory        TicketHistory[]
+  assets               Asset[]            @relation("AssetAssignee")
+  assetAssignments     AssetAssignment[]
+  assetHistory         AssetHistory[]
+  notifications        Notification[]
+  notificationPrefs    NotificationPreference?
+  auditLogs            AuditLog[]
+  refreshTokens        RefreshToken[]
+  passwordResetTokens  PasswordResetToken[]
+}
+
+model RefreshToken {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash   String    @unique // sha256 of the opaque token
+  family      String // rotation family for reuse detection
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  replacedById String?
+  userAgent   String?
+  ip          String?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId])
+  @@index([family])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ────────────────────────── Ticketing ──────────────────────────
+
+model Category {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+  tickets     Ticket[]
+  assets      Asset[]
+  slaPolicies SlaPolicy[]
+  createdAt   DateTime @default(now())
+}
+
+model Ticket {
+  id          String    @id @default(cuid())
+  title       String
+  description String
+  status      String    @default("OPEN") // OPEN|ASSIGNED|IN_PROGRESS|PENDING|RESOLVED|CLOSED
+  priority    String    @default("MEDIUM") // LOW|MEDIUM|HIGH|URGENT
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id])
+  requesterId String
+  requester   User      @relation("TicketRequester", fields: [requesterId], references: [id])
+  assigneeId  String?
+  assignee    User?     @relation("TicketAssignee", fields: [assigneeId], references: [id])
+
+  slaFirstResponseDueAt DateTime?
+  slaResolutionDueAt    DateTime?
+  firstRespondedAt      DateTime?
+  resolvedAt            DateTime?
+  closedAt              DateTime?
+
+  comments    TicketComment[]
+  attachments TicketAttachment[]
+  history     TicketHistory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([requesterId])
+  @@index([assigneeId])
+  @@index([categoryId])
+}
+
+model TicketComment {
+  id         String   @id @default(cuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User     @relation(fields: [authorId], references: [id])
+  body       String
+  isInternal Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([ticketId])
+}
+
+model TicketAttachment {
+  id         String   @id @default(cuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  uploaderId String
+  uploader   User     @relation(fields: [uploaderId], references: [id])
+  filename   String // original name
+  storedName String // generated safe name on disk
+  mimeType   String
+  sizeBytes  Int
+  createdAt  DateTime @default(now())
+
+  @@index([ticketId])
+}
+
+model TicketHistory {
+  id       String   @id @default(cuid())
+  ticketId String
+  ticket   Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actorId  String?
+  actor    User?    @relation(fields: [actorId], references: [id])
+  action   String // CREATED | STATUS_CHANGED | ASSIGNED | PRIORITY_CHANGED | COMMENTED | ...
+  detail   String?
+  createdAt DateTime @default(now())
+
+  @@index([ticketId])
+}
+
+// ────────────────────────── Assets ──────────────────────────
+
+model Asset {
+  id           String    @id @default(cuid())
+  assetTag     String    @unique
+  name         String
+  serialNumber String?
+  status       String    @default("AVAILABLE") // AVAILABLE|ASSIGNED|MAINTENANCE|RETURNED|RETIRED
+  categoryId   String?
+  category     Category? @relation(fields: [categoryId], references: [id])
+  assignedToId String?
+  assignedTo   User?     @relation("AssetAssignee", fields: [assignedToId], references: [id])
+  location     String?
+  purchasedAt  DateTime?
+  warrantyUntil DateTime?
+  assignments  AssetAssignment[]
+  history      AssetHistory[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status])
+  @@index([assignedToId])
+}
+
+model AssetAssignment {
+  id           String    @id @default(cuid())
+  assetId      String
+  asset        Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+  assignedById String
+  assignedAt   DateTime  @default(now())
+  returnedAt   DateTime?
+  notes        String?
+
+  @@index([assetId])
+  @@index([userId])
+}
+
+model AssetHistory {
+  id      String   @id @default(cuid())
+  assetId String
+  asset   Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  actorId String?
+  actor   User?    @relation(fields: [actorId], references: [id])
+  action  String // REGISTERED | ASSIGNED | RETURNED | MAINTENANCE_STARTED | MAINTENANCE_ENDED | RETIRED
+  detail  String?
+  createdAt DateTime @default(now())
+
+  @@index([assetId])
+}
+
+// ────────────────────────── SLA ──────────────────────────
+
+model SlaPolicy {
+  id                   String    @id @default(cuid())
+  name                 String    @unique
+  categoryId           String? // null = default policy
+  category             Category? @relation(fields: [categoryId], references: [id])
+  firstResponseMinutes Int
+  resolutionMinutes    Int
+  isActive             Boolean   @default(true)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+}
+
+// ────────────────────────── Notifications ──────────────────────────
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // TICKET_CREATED | TICKET_ASSIGNED | TICKET_UPDATED | SLA_WARNING | SLA_BREACH | ...
+  title     String
+  body      String
+  ticketId  String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([readAt])
+}
+
+model NotificationPreference {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailEnabled Boolean  @default(true)
+  inAppEnabled Boolean  @default(true)
+  updatedAt    DateTime @updatedAt
+}
+
+// ────────────────────────── Audit & Security ──────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String // LOGIN | LOGOUT | TICKET_CREATED | ASSET_ASSIGNED | ADMIN_ACTION | ...
+  entityType String?
+  entityId   String?
+  detail     String?
+  ip         String?
+  requestId  String?
+  createdAt  DateTime @default(now())
+
+  @@index([action])
+  @@index([createdAt])
+}
+
+model SecurityEvent {
+  id        String   @id @default(cuid())
+  type      String // AUTH_LOGIN_FAILED | TOKEN_REUSE | RATE_LIMITED | ...
+  userId    String?
+  email     String?
+  detail    String?
+  ip        String?
+  requestId String?
+  createdAt DateTime @default(now())
+
+  @@index([type])
+  @@index([createdAt])
+}
